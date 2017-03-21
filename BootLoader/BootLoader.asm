@@ -5,13 +5,31 @@ SECTION .text
 
 jmp 0x07C0:START
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;	Basis Values For MuleOS
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+TOTALSECTORCOUNT:	dw	1024
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;	Code Sector
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 START:
 	mov ax, 0x07C0
 	mov ds, ax
 	mov ax, 0xB800
 	mov es, ax
 
-	mov si, 0
+	; Making Stack from 0x0000 to 0xFFFE (64kb size)
+
+	mov ax, 0x0000
+	mov ss, ax
+	mov sp, 0xFFFE
+	mov bp, 0xFFFE
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	Flush Screen and char setting to green
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 .SCREENCLEARLOOP:
 	mov byte [es:si], 0
@@ -19,24 +37,179 @@ START:
 	add si, 2
 	cmp si, 80*25*2
 	jl .SCREENCLEARLOOP
-	mov si, 0
-	mov di, 0
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	Printing Start Messages
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	push MESSAGE1
+	push 0
+	push 0
+	call PRINTMESSAGE
+	add sp, 6
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	Disk Loading
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	Reset all before read it
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+RESETDISK:
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	Call BIOS Reset Function
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	mov ax, 0
+	mov dl, 0
+	int 0x13
+	jc HANDLEDISKERROR
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	; Read sector from disk
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	mov si, 0x1000
+	mov es, si
+	mov bx, 0x0000
+
+	mov di, word [ TOTALSECTORCOUNT ]
+
+READDATA:
+	cmp di, 0
+	je READEND
+	sub di, 0x1
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	Call BIOS read function
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	mov ah, 0x02
+	mov al, 0x1
+	mov ch, byte [ TRACKNUMBER ]
+	mov cl, byte [ SECTORNUMBER ]
+	mov dh, byte [ HEADNUMBER ]
+	mov dl, 0x00
+	int 0x13
+	jc HANDLEDISKERROR
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	Calculate address, track, head and sector to copy
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	add si, 0x0020
+	mov es, si
+
+	mov al, [ SECTORNUMBER ]
+	add al, 0x01
+	mov byte [ SECTORNUMBER ], al
+	cmp al, 19
+	jl READDATA
+
+	xor byte [ HEADNUMBER ], 0x01
+	mov byte [ SECTORNUMBER ], 0x01
+
+	cmp byte [ HEADNUMBER ], 0x00
+	jne READDATA
+
+	add byte [ TRACKNUMBER ], 0x01
+	jmp READDATA
+
+READEND:
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	Print OS imaging is completed
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	
+	push LOADINGCOMPLETEMESSAGE
+	push 1
+	push 29
+	call PRINTMESSAGE
+	add sp, 6
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	; 	Execute Loaded OS Image
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	jmp 0x1000:0x0000
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;	Fuction code sector
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+HANDLEDISKERROR:
+	push DISKERRORMESSAGE
+	push 1
+	push 15
+	call PRINTMESSAGE
+
+	jmp $
+
+PRINTMESSAGE:
+	push bp
+	mov bp, sp
+	push es
+	push si
+	push di
+	push ax
+	push cx
+	push dx
+
+	mov ax, 0xB800
+	mov es, ax
+
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;	Calculate Video Memory address with x,y parameters
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+	mov ax, word [ bp + 6 ]
+	mov si, 160
+	mul si
+	mov di, ax
+
+	mov ax, word [ bp + 4 ]
+	mov si, 2
+	mul si
+	add di, ax
+
+	mov si, word [ bp + 8 ]
 
 .MESSAGELOOP:
-	mov cl, byte[si+MESSAGE1]
+	mov cl, byte [ si ]
 	cmp cl, 0
 	je .MESSAGEEND
-	mov byte[es:di], cl
+	
+	mov byte[ es : di ], cl
+	
 	add si, 1
 	add di, 2
+	
 	jmp .MESSAGELOOP
 
 .MESSAGEEND:
-	jmp $
+	pop dx
+	pop cx
+	pop ax
+	pop di
+	pop si
+	pop es
+	pop bp
+	ret
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;	Data Sector
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 MESSAGE1: db 'MuleOS Boot Loader Ready to go', 0;
 
-times 510-($-$$)  db  0x00
+DISKERRORMESSAGE:	db 	'There is a DISK ERROR.', 0
+IMAGELOADINGMESSAGE:		db 	'OS Image Loading ... ... ...', 0
+LOADINGCOMPLETEMESSAGE:	db 	'OS Image Load Completed.', 0
+
+SECTORNUMBER:	db 	0x02
+HEADNUMBER:		db 	0x00
+TRACKNUMBER:		db 	0x00
+
+times 510 - ( $ - $$ )  db  0x00
 
 db 0x55
 db 0xAA
